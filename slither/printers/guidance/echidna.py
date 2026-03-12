@@ -215,8 +215,11 @@ def _extract_constant_from_read(
         else:
             value_type = var_read.type
         try:
-            value = ConstantFolding(var_read.expression, value_type).result()
-            all_cst_used.append(ConstantValue(str(value), str(value_type)))
+            cst = ConstantFolding(var_read.expression, value_type).result()
+            cst_value = cst.value
+            if isinstance(cst_value, bytes):
+                cst_value = int.from_bytes(cst_value, "big")
+            all_cst_used.append(ConstantValue(str(cst_value), str(value_type)))
         except NotConstant:
             pass
     if isinstance(var_read, Constant):
@@ -281,6 +284,16 @@ def _extract_constants_from_irs(
                 all_cst_used.append(ConstantValue(str(internal_num), "uint256"))
             except ValueError:  # index could fail; should never happen in working solidity code
                 pass
+        if isinstance(ir, SolidityCall) and ir.function == SolidityFunction("keccak256(bytes)"):
+            try:
+                type_ = ir.lvalue.type
+                cst = ConstantFolding(ir.expression, type_).result()
+                value = cst.value
+                if isinstance(value, bytes):
+                    value = int.from_bytes(value, "big")
+                all_cst_used.append(ConstantValue(str(value), str(type_)))
+            except NotConstant:
+                raise
         for r in ir.read:
             _extract_constant_from_read(
                 ir, r, all_cst_used, all_cst_used_in_binary, context_explored

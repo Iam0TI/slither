@@ -35,6 +35,7 @@ CONSTANT_TYPES_OPERATIONS = (
     | TupleExpression
     | TypeConversion
     | MemberAccess
+    | CallExpression
 )
 
 
@@ -74,7 +75,7 @@ class ConstantFolding(ExpressionVisitor):
         return Literal(value, self._type)
 
     def _post_identifier(self, expression: Identifier) -> None:
-        from slither.core.declarations.solidity_variables import SolidityFunction
+        from slither.core.declarations.solidity_variables import SolidityFunction, SolidityVariable
         from slither.core.declarations.enum import Enum
         from slither.core.solidity_types.type_alias import TypeAlias
         from slither.core.declarations.contract import Contract
@@ -98,16 +99,17 @@ class ConstantFolding(ExpressionVisitor):
                     cf = ConstantFolding(expr, self._type)
                     expr = cf.result()
                 assert isinstance(expr, Literal)
+                # check use this helper instead of manually fomr bytes
                 set_val(expression, convert_string_to_int(expr.converted_value))
             else:
                 raise NotConstant
-        elif isinstance(expression.value, SolidityFunction):
+        elif isinstance(expression.value, (SolidityFunction, SolidityVariable)):
             set_val(expression, expression.value)
         else:
             # Enum: We don't want to raise an error for a direct access to an Enum as they can be converted to a constant value
             # We can't handle it here because we don't have the field accessed so we do it in _post_member_access
             # TypeAlias: Support when a .wrap() is done with a constant
-            # Contract: Support when a constatn is use from a different contract
+            # Contract: Support when a constant is used from a different contract
             if not isinstance(expression.value, (Enum, TypeAlias, Contract)):
                 raise NotConstant
 
@@ -241,7 +243,7 @@ class ConstantFolding(ExpressionVisitor):
         raise NotConstant
 
     def _post_call_expression(self, expression: expressions.CallExpression) -> None:
-        from slither.core.declarations.solidity_variables import SolidityFunction
+        from slither.core.declarations.solidity_variables import SolidityFunction, SolidityVariable
         from slither.core.declarations.enum import Enum
         from slither.core.solidity_types import TypeAlias
 
@@ -260,24 +262,51 @@ class ConstantFolding(ExpressionVisitor):
             # Returning early to support type(ElemType).max/min or type(MyEnum).max/min
             return
         if (
-            isinstance(expression.called.expression, Identifier)
+            isinstance(expression.called, MemberAccess)
+            and isinstance(expression.called.expression, Identifier)
             and isinstance(expression.called.expression.value, TypeAlias)
-            and isinstance(expression.called, MemberAccess)
             and expression.called.member_name == "wrap"
             and len(expression.arguments) == 1
         ):
             # Handle constants in .wrap of user defined type
             set_val(expression, get_val(expression.arguments[0]))
             return
-
-        called = get_val(expression.called)
-        args = [get_val(arg) for arg in expression.arguments]
-        if called.name == "keccak256(bytes)":
+        if (
+            isinstance(expression.called, MemberAccess)
+            and isinstance(expression.called.expression, Identifier)
+            and expression.called.expression.value == SolidityVariable("abi")
+            and expression.called.member_name == "encodePacked"
+        ):
+            packed = b""
+            for arg in expression.arguments:
+                val = get_val(arg)
+                if isinstance(val, str):
+                    packed += val.encode("utf-8")
+                elif isinstance(val, bytes):
+                    packed += val
+                elif isinstance(val, (int, Fraction)):
+                    packed += int(val).to_bytes(32, "big")
+                else:
+                    raise NotConstant
+            set_val(expression, packed)
+            return
+        if isinstance(
+            expression.called, Identifier
+        ) and expression.called.value == SolidityFunction("keccak256(bytes)"):
+            if len(expression.arguments) != 1:
+                raise NotConstant
+            arg_val = get_val(expression.arguments[0])
+            if isinstance(arg_val, str):
+                data = arg_val.encode("utf-8")
+            elif isinstance(arg_val, bytes):
+                data = arg_val
+            else:
+                raise NotConstant
             digest = keccak.new(digest_bits=256)
-            digest.update(str(args[0]).encode("utf8"))
+            digest.update(data)
             set_val(expression, digest.digest())
-        else:
-            raise NotConstant
+            return
+        raise NotConstant
 
     def _post_conditional_expression(self, expression: expressions.ConditionalExpression) -> None:
         raise NotConstant
@@ -299,7 +328,14 @@ class ConstantFolding(ExpressionVisitor):
             EnumTopLevel,
             Enum,
         )
+        from slither.core.declarations.solidity_variables import SolidityVariable
         from slither.core.solidity_types import UserDefinedType, TypeAlias
+
+        # abi.encodePacked etc. are handled in _post_call_expression
+        if isinstance(expression.expression, Identifier) and isinstance(
+            expression.expression.value, SolidityVariable
+        ):
+            return
 
         if isinstance(expression.expression, CallExpression) and expression.member_name in [
             "min",
