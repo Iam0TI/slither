@@ -20,6 +20,7 @@ from slither.analyses.data_flow.analyses.interval.operations.type_utils import (
 from slither.analyses.data_flow.analyses.interval.operations.type_conversion import (
     match_width,
 )
+from slither.analyses.data_flow.analyses.interval.core.state import State
 from slither.analyses.data_flow.analyses.interval.core.tracked_variable import (
     TrackedSMTVariable,
 )
@@ -113,15 +114,22 @@ class MemberHandler(BaseOperationHandler):
             return None
 
         field_suffix = f".{operation.variable_right.value}"
+
+        state = domain.state
+        if isinstance(state, State):
+            range_vars = state.get_range_variables()
+        else:
+            return None
+
         latest = None
-        for variable_name in domain.state.get_range_variables():
+        for variable_name in range_vars:
             if variable_name == field_name:
                 continue
             if not variable_name.endswith(field_suffix):
                 continue
             if not variable_name.startswith(base_name):
                 continue
-            latest = domain.state.get_variable(variable_name)
+            latest = range_vars[variable_name]
         return latest
 
     def _link_reference_to_field(
