@@ -33,12 +33,14 @@ class State:
         path_constraints: list["SMTTerm"] | None = None,
         dependencies: dict[str, set[str]] | None = None,
         storage_slots: dict[str, list[str]] | None = None,
+        field_aliases: dict[str, str] | None = None,
     ):
         self._variables: dict[str, TrackedSMTVariable] = variables or {}
         self._comparisons: dict[str, ComparisonInfo] = comparisons or {}
         self._path_constraints: list["SMTTerm"] = path_constraints or []
         self._dependencies: dict[str, set[str]] = dependencies or {}
         self._storage_slots: dict[str, list[str]] = storage_slots or {}
+        self._field_aliases: dict[str, str] = field_aliases or {}
 
     def get_variable(self, name: str) -> TrackedSMTVariable | None:
         """Get tracked variable by name, or None if not tracked."""
@@ -120,6 +122,17 @@ class State:
         """Get list of variable names written to this slot."""
         return self._storage_slots.get(slot_key, [])
 
+    def set_field_alias(self, base_key: str, ssa_key: str) -> None:
+        """Map a base field name to the most recent SSA-versioned name."""
+        self._field_aliases[base_key] = ssa_key
+
+    def resolve_field_alias(self, base_key: str) -> TrackedSMTVariable | None:
+        """Look up a field variable via its base-name alias."""
+        ssa_key = self._field_aliases.get(base_key)
+        if ssa_key is None:
+            return None
+        return self._variables.get(ssa_key)
+
     def deep_copy(self) -> "State":
         """Create a deep copy of the state."""
         copied_deps = {k: set(v) for k, v in self._dependencies.items()}
@@ -130,4 +143,5 @@ class State:
             list(self._path_constraints),
             copied_deps,
             copied_storage,
+            dict(self._field_aliases),
         )

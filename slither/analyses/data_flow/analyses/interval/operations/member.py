@@ -47,12 +47,13 @@ class MemberHandler(BaseOperationHandler):
 
         reference_name = get_variable_name(operation.lvalue)
         field_name = self._build_field_name(operation)
+        base_key = self._build_base_field_key(operation)
 
         tracked_reference = self._create_tracked_variable(
             reference_name, field_type, domain
         )
         self._link_reference_to_field(
-            tracked_reference, field_name, field_type, domain
+            tracked_reference, field_name, base_key, field_type, domain
         )
 
     def _get_field_type(self, operation: Member) -> ElementaryType | None:
@@ -63,7 +64,7 @@ class MemberHandler(BaseOperationHandler):
         return None
 
     def _build_field_name(self, operation: Member) -> str:
-        """Build field name using points_to for write-through semantics."""
+        """Build SSA-versioned field name (primary key)."""
         points_to_target = operation.lvalue.points_to
         if isinstance(points_to_target, Variable):
             struct_name = get_variable_name(points_to_target)
@@ -72,6 +73,31 @@ class MemberHandler(BaseOperationHandler):
 
         field_identifier = operation.variable_right.value
         return f"{struct_name}.{field_identifier}"
+
+    def _build_base_field_key(self, operation: Member) -> str | None:
+        """Build storage-stable field key without SSA version.
+
+        Returns None when the struct is a reference (REF_N), since
+        references already lack SSA suffixes and the base key would
+        equal the primary key.
+        """
+        points_to_target = operation.lvalue.points_to
+        if not isinstance(points_to_target, Variable):
+            return None
+
+        base_name = points_to_target.name
+        if base_name is None:
+            return None
+
+        field_identifier = operation.variable_right.value
+        base_key = f"{base_name}.{field_identifier}"
+
+        # Only useful when it differs from the SSA-versioned name
+        ssa_name = get_variable_name(points_to_target)
+        if f"{ssa_name}.{field_identifier}" == base_key:
+            return None
+
+        return base_key
 
     def _create_tracked_variable(
         self,
@@ -94,11 +120,21 @@ class MemberHandler(BaseOperationHandler):
         self,
         tracked_reference: TrackedSMTVariable,
         field_name: str,
+        base_key: str | None,
         field_type: ElementaryType,
         domain: "IntervalDomain",
     ) -> None:
-        """Link reference variable to struct field with equality constraint."""
+        """Link reference variable to struct field with equality constraint.
+
+        Looks up the field by its SSA-versioned name first.  If not
+        found, falls back to a storage-stable alias that maps the
+        base field key to the last SSA-versioned name that touched
+        the same slot.
+        """
         tracked_field = domain.state.get_variable(field_name)
+
+        if tracked_field is None and base_key is not None:
+            tracked_field = domain.state.resolve_field_alias(base_key)
 
         if tracked_field is None:
             tracked_field = self._create_tracked_variable(
@@ -109,3 +145,6 @@ class MemberHandler(BaseOperationHandler):
             self.solver, tracked_field.term, tracked_reference.term
         )
         self.solver.assert_constraint(tracked_reference.term == field_term)
+
+        if base_key is not None:
+            domain.state.set_field_alias(base_key, field_name)
