@@ -36,7 +36,9 @@ if TYPE_CHECKING:
     from slither.core.declarations.contract import Contract
     from slither.core.declarations.function import Function
 
-from slither.analyses.data_flow.analysis import DEFAULT_OPTIMIZE_TIMEOUT_MS as DEFAULT_TIMEOUT_MS
+from slither.analyses.data_flow.analysis import (
+    DEFAULT_OPTIMIZE_TIMEOUT_MS as DEFAULT_TIMEOUT_MS,
+)
 from slither.analyses.data_flow.logger import get_logger
 
 
@@ -206,9 +208,7 @@ def analyze_contract(path: str, config: AnalysisConfig) -> int:
         return 0
 
     # Annotated source output mode
-    function_found, output_produced = _run_annotated_analysis(
-        contracts, config, cache
-    )
+    function_found, output_produced = _run_annotated_analysis(contracts, config, cache)
 
     if config.function_name and not (function_found and output_produced):
         return _report_empty_function(contracts, config)
@@ -232,8 +232,7 @@ def _report_empty_function(
 ) -> int:
     """Report when -f targets a function with no analysis output."""
     function_exists = any(
-        _get_functions(contract, config.function_name)
-        for contract in contracts
+        _get_functions(contract, config.function_name) for contract in contracts
     )
 
     target = f"'{config.function_name}'"
@@ -243,10 +242,7 @@ def _report_empty_function(
     if not function_exists:
         console.print(f"[red]Function {target} not found[/red]")
     else:
-        console.print(
-            f"[yellow]Function {target} produced no "
-            f"analysis output[/yellow]"
-        )
+        console.print(f"[yellow]Function {target} produced no analysis output[/yellow]")
     return 1
 
 
@@ -273,9 +269,7 @@ def _run_annotated_analysis(
 
         for function in functions:
             solver = Z3Solver(use_optimizer=True)
-            annotated = analyze_function(
-                function, solver, config, cache
-            )
+            annotated = analyze_function(function, solver, config, cache)
             if annotated:
                 output_produced = True
                 render_annotated_function(annotated)
@@ -344,7 +338,8 @@ def _analyze_contracts_json(
         for function in _get_functions(contract, config.function_name):
             solver = Z3Solver(use_optimizer=True)
             analysis = IntervalAnalysis(
-                solver=solver, timeout_ms=config.timeout_ms,
+                solver=solver,
+                timeout_ms=config.timeout_ms,
             )
             engine = Engine.new(analysis=analysis, function=function)
             start = time.time()
@@ -353,7 +348,11 @@ def _analyze_contracts_json(
             duration = round(time.time() - start, 3)
             results = engine.result()
             annotated = build_annotated_function(
-                function, results, solver, config, cache,
+                function,
+                results,
+                solver,
+                config,
+                cache,
             )
             if annotated:
                 func_dict = _annotated_function_to_dict(annotated)
@@ -732,10 +731,14 @@ def _create_annotation(
     column = 0
 
     # Check overflow possibility for unchecked arithmetic (deferred to annotation time)
-    can_overflow, can_underflow = _check_overflow_possible(solver, smt_var, effective_timeout)
+    can_overflow, can_underflow = _check_overflow_possible(
+        solver, smt_var, effective_timeout
+    )
 
     # Record precision metrics
-    _record_precision_telemetry(min_val, max_val, bit_width, can_overflow, can_underflow)
+    _record_precision_telemetry(
+        min_val, max_val, bit_width, can_overflow, can_underflow
+    )
 
     return build_annotation_from_range(
         var_name=display_name,
@@ -759,8 +762,10 @@ def _check_overflow_possible(
 ) -> tuple[bool, bool]:
     """Check if overflow/underflow is possible for unchecked arithmetic.
 
-    Called at annotation time (after analysis) to avoid slowing down the analysis.
-    Uses a timeout to skip expensive checks (e.g., multiplication overflow).
+    Called at annotation time (after analysis) to avoid slowing down the
+    analysis. Uses a timeout to skip expensive checks. When the solver
+    returns UNKNOWN (timeout), we conservatively report overflow as
+    possible — only an explicit UNSAT proves the operation is safe.
 
     Args:
         solver: The SMT solver instance.
@@ -782,14 +787,14 @@ def _check_overflow_possible(
         solver.push()
         solver.assert_constraint(solver.Not(smt_var.no_overflow))
         result = solver.check_sat_with_timeout(timeout_ms)
-        can_overflow = result == CheckSatResult.SAT
+        can_overflow = result != CheckSatResult.UNSAT
         solver.pop()
 
     if smt_var.no_underflow is not None:
         solver.push()
         solver.assert_constraint(solver.Not(smt_var.no_underflow))
         result = solver.check_sat_with_timeout(timeout_ms)
-        can_underflow = result == CheckSatResult.SAT
+        can_underflow = result != CheckSatResult.UNSAT
         solver.pop()
 
     return can_overflow, can_underflow
@@ -868,8 +873,7 @@ def _simplify_var_name(var_name: str, keep_ssa: bool = False) -> str:
             # Check if first part looks like an SSA variable (ends with _N)
             first_part = parts[0]
             is_struct_field = (
-                "_" in first_part
-                and first_part.rsplit("_", 1)[-1].isdigit()
+                "_" in first_part and first_part.rsplit("_", 1)[-1].isdigit()
             )
             if not is_struct_field:
                 base_name = parts[-1]
