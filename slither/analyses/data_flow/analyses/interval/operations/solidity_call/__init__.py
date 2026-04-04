@@ -93,6 +93,8 @@ class SolidityCallHandler(BaseOperationHandler):
 
         is_revert = (
             function_name in REVERT_FUNCTIONS
+            or function_name.startswith("revert(")
+            or function_name.startswith("revert ")
             or isinstance(operation.function, SolidityCustomRevert)
         )
         if is_revert:
