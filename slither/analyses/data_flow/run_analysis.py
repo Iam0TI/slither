@@ -8,6 +8,7 @@ Supports both human-readable annotated source and JSON output for testing.
 import argparse
 import json
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -191,9 +192,18 @@ def analyze_contract(path: str, config: AnalysisConfig) -> int:
 
     # JSON output mode - collect results for all contracts
     if config.json_output:
-        json_output = _analyze_contracts_json(contracts, config, cache)
-        print(json.dumps(json_output, indent=2, sort_keys=True))
-        if config.function_name and not json_output:
+        from slither.analyses.data_flow.logger import get_logger
+        logger = get_logger()
+        logger.start_collecting_errors()
+
+        functions = _analyze_contracts_json(contracts, config, cache)
+        output = {
+            "status": "completed" if functions else "empty",
+            "errors": logger.get_collected_errors(),
+            "functions": functions,
+        }
+        print(json.dumps(output, indent=2))
+        if config.function_name and not functions:
             return _report_empty_function(contracts, config)
         return 0
 
@@ -323,48 +333,68 @@ def _analyze_contracts_json(
     contracts: list["Contract"],
     config: AnalysisConfig,
     cache: "RangeQueryCache",
-) -> dict:
-    """Analyze contracts and return JSON-serializable results."""
+) -> list[dict]:
+    """Analyze contracts and return list of serialized annotated functions."""
+    from slither.analyses.data_flow.analyses.interval.analysis.analysis import (
+        IntervalAnalysis,
+    )
+    from slither.analyses.data_flow.engine.engine import Engine
     from slither.analyses.data_flow.smt_solver import Z3Solver
 
-    output: dict = {}
-
+    functions: list[dict] = []
     for contract in contracts:
-        contract_data: dict = {}
-        functions = _get_functions(contract, config.function_name)
-
-        for function in functions:
+        for function in _get_functions(contract, config.function_name):
             solver = Z3Solver(use_optimizer=True)
-            func_result = _analyze_function_json(function, solver, config, cache)
-            if func_result:
-                contract_data[function.name] = func_result
+            analysis = IntervalAnalysis(
+                solver=solver, timeout_ms=config.timeout_ms,
+            )
+            engine = Engine.new(analysis=analysis, function=function)
+            start = time.time()
+            engine.run_analysis()
 
-        if contract_data:
-            output[contract.name] = contract_data
+            duration = round(time.time() - start, 3)
+            results = engine.result()
+            annotated = build_annotated_function(
+                function, results, solver, config, cache,
+            )
+            if annotated:
+                func_dict = _annotated_function_to_dict(annotated)
+                func_dict["iterations"] = engine.iteration_count
+                func_dict["duration_seconds"] = duration
+                functions.append(func_dict)
 
-    return output
+    return functions
 
 
-def _count_solvable_variables(
-    nodes_to_process: list["Node"],
-    results: dict,
-) -> int:
-    """Count variables that need SMT range solving across exit nodes."""
-    from slither.analyses.data_flow.analyses.interval.analysis.domain import (
-        DomainVariant,
-    )
-
-    seen: set[str] = set()
-    for node in nodes_to_process:
-        if node not in results:
+def _annotated_function_to_dict(func: AnnotatedFunction) -> dict:
+    """Serialize an AnnotatedFunction to a JSON-compatible dict."""
+    lines: dict[str, dict] = {}
+    for line_num, line in func.lines.items():
+        if not line.annotations:
             continue
-        state = results[node]
-        if state.post.variant != DomainVariant.STATE:
-            continue
-        for var_name in state.post.state.get_range_variables():
-            if not _should_skip_var_json(var_name, {}):
-                seen.add(var_name)
-    return len(seen)
+        lines[str(line_num)] = {
+            "source": line.source_text,
+            "annotations": [
+                {
+                    "variable": ann.variable_name,
+                    "min": ann.min_value,
+                    "max": ann.max_value,
+                    "bit_width": ann.bit_width,
+                    "can_overflow": ann.can_overflow,
+                    "can_underflow": ann.can_underflow,
+                    "is_return": ann.is_return,
+                }
+                for ann in line.annotations
+            ],
+        }
+    return {
+        "function": func.function_name,
+        "contract": func.contract_name,
+        "file": func.filename,
+        "start_line": func.start_line,
+        "end_line": func.end_line,
+        "lines": lines,
+    }
 
 
 def _compute_budget_timeout(
@@ -381,139 +411,6 @@ def _compute_budget_timeout(
     budget_ms = budget_seconds * 1000
     per_query_ms = budget_ms // query_count
     return max(per_query_ms, 100)
-
-
-def _analyze_function_json(
-    function: "Function",
-    solver: "SMTSolver",
-    config: AnalysisConfig,
-    cache: "RangeQueryCache",
-) -> dict | None:
-    """Analyze a function and return JSON-serializable result."""
-    from slither.analyses.data_flow.analyses.interval.analysis.analysis import (
-        IntervalAnalysis,
-    )
-    from slither.analyses.data_flow.analyses.interval.analysis.domain import (
-        DomainVariant,
-    )
-    from slither.analyses.data_flow.analysis import RangeQueryConfig, solve_variable_range
-    from slither.analyses.data_flow.engine.engine import Engine
-
-    if not function.nodes:
-        return None
-
-    analysis = IntervalAnalysis(solver=solver, timeout_ms=config.timeout_ms)
-    engine = Engine.new(analysis=analysis, function=function)
-    engine.run_analysis()
-    results = engine.result()
-
-    # Find nodes to collect results from (exit nodes)
-    nodes_to_process = _get_exit_nodes(function, results)
-
-    # Compute per-query timeout from budget if specified
-    timeout_ms = config.timeout_ms
-    if config.budget_seconds is not None:
-        variable_count = _count_solvable_variables(nodes_to_process, results)
-        timeout_ms = _compute_budget_timeout(config.budget_seconds, variable_count)
-
-    variables: dict = {}
-
-    for node in nodes_to_process:
-        if node not in results:
-            continue
-        state = results[node]
-        if state.post.variant != DomainVariant.STATE:
-            continue
-
-        post_state = state.post.state
-        range_vars = post_state.get_range_variables()
-        path_constraints = post_state.get_path_constraints()
-
-        for var_name, smt_var in range_vars.items():
-            if _should_skip_var_json(var_name, variables):
-                continue
-
-            range_config = RangeQueryConfig(
-                path_constraints=path_constraints,
-                timeout_ms=timeout_ms,
-                skip_optimization=config.skip_solving,
-                cache=cache,
-            )
-            min_result, max_result = solve_variable_range(solver, smt_var, range_config)
-
-            if not min_result or not max_result:
-                continue
-
-            # Handle unreachable paths
-            if min_result.get("unreachable"):
-                variables[var_name] = {
-                    "range": "⊥ (unreachable)",
-                    "overflow": "NO",
-                }
-                continue
-
-            min_val = min_result["value"]
-            max_val = max_result["value"]
-            has_overflow = min_result.get("overflow", False) or max_result.get(
-                "overflow", False
-            )
-
-            # Handle wrapped ranges
-            if min_val > max_val:
-                range_str = f"[{max_val}, {min_val}]"
-            else:
-                range_str = f"[{min_val}, {max_val}]"
-
-            variables[var_name] = {
-                "range": range_str,
-                "overflow": "YES" if has_overflow else "NO",
-            }
-
-    if not variables:
-        return None
-
-    return {"variables": variables}
-
-
-def _get_exit_nodes(function: "Function", results: dict) -> list["Node"]:
-    """Get exit nodes for result collection."""
-    from slither.analyses.data_flow.analyses.interval.analysis.domain import (
-        DomainVariant,
-    )
-
-    return_nodes = [node for node in function.nodes if not node.sons]
-    if not return_nodes and function.nodes:
-        return_nodes = [function.nodes[-1]]
-
-    # Check if all return nodes are unreachable
-    all_unreachable = all(
-        node not in results or results[node].post.variant != DomainVariant.STATE
-        for node in return_nodes
-    )
-
-    if all_unreachable:
-        for node in reversed(function.nodes):
-            if node in results and results[node].post.variant == DomainVariant.STATE:
-                return [node]
-
-    return return_nodes
-
-
-def _should_skip_var_json(
-    var_name: str,
-    existing: dict,
-) -> bool:
-    """Check if variable should be skipped for JSON output.
-
-    JSON output includes everything except:
-    - Duplicates
-    - Internal call variables (prefixed with _lib or _int)
-    """
-    if var_name in existing:
-        return True
-    if var_name.startswith("_lib") or var_name.startswith("_int"):
-        return True
-    return False
 
 
 def analyze_function(

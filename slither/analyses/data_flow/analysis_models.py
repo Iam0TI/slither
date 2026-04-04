@@ -30,6 +30,9 @@ class LineAnnotation:
     column: int = 0
     can_overflow: bool = False
     can_underflow: bool = False
+    min_value: int = 0
+    max_value: int = 0
+    bit_width: int = 256
 
 
 @dataclass

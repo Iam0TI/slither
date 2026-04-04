@@ -265,4 +265,7 @@ def build_annotation_from_range(
         column=column,
         can_overflow=can_overflow,
         can_underflow=can_underflow,
+        min_value=min_val,
+        max_value=max_val,
+        bit_width=bit_width,
     )

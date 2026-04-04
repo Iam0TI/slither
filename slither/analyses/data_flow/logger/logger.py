@@ -105,6 +105,7 @@ class DataFlowLogger:
         """
         self.enable_ipython_embed = enable_ipython_embed and IPYTHON_AVAILABLE
         self.log_level = log_level
+        self._collected_errors: list[str] = []
 
         # Configure Loguru logger
         logger.remove()  # Remove default handler
@@ -201,6 +202,7 @@ class DataFlowLogger:
         """
         formatted_message = message.format(*args, **kwargs) if args or kwargs else message
         self._logger.opt(depth=1).error(formatted_message)
+        self._collected_errors.append(formatted_message)
 
         if embed_on_error and self.enable_ipython_embed:
             self._embed_for_debugging(message=formatted_message, **kwargs)
@@ -230,6 +232,7 @@ class DataFlowLogger:
         """
         formatted_message = message.format(*args, **kwargs) if args or kwargs else message
         self._logger.error(formatted_message)
+        self._collected_errors.append(formatted_message)
 
         if embed_on_error and self.enable_ipython_embed:
             self._embed_for_debugging(message=formatted_message, **kwargs)
@@ -349,6 +352,14 @@ class DataFlowLogger:
             colorize=True,
         )
         self._logger = logger
+
+    def start_collecting_errors(self) -> None:
+        """Reset and start collecting error messages."""
+        self._collected_errors = []
+
+    def get_collected_errors(self) -> list[str]:
+        """Return collected error messages since last start_collecting_errors call."""
+        return list(self._collected_errors)
 
 
 # Create a module-level instance for easy access
