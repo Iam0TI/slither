@@ -31,6 +31,18 @@ if TYPE_CHECKING:
     from slither.core.cfg.node import Node
 
 
+def _get_storage_base_name(variable: Variable) -> str:
+    """Return the non-SSA base name of a variable.
+
+    For SSA variables (StateIRVariable, LocalIRVariable) this strips
+    the ``_N`` version suffix so that different SSA versions of the
+    same storage location map to the same field key.
+    """
+    if variable.name is not None:
+        return variable.name
+    return str(variable)
+
+
 class MemberHandler(BaseOperationHandler):
     """Handler for Member operations (struct field access)."""
 
@@ -51,9 +63,7 @@ class MemberHandler(BaseOperationHandler):
         tracked_reference = self._create_tracked_variable(
             reference_name, field_type, domain
         )
-        self._link_reference_to_field(
-            tracked_reference, field_name, field_type, domain
-        )
+        self._link_reference_to_field(tracked_reference, field_name, field_type, domain)
 
     def _get_field_type(self, operation: Member) -> ElementaryType | None:
         """Extract elementary type from the struct field."""
@@ -63,10 +73,15 @@ class MemberHandler(BaseOperationHandler):
         return None
 
     def _build_field_name(self, operation: Member) -> str:
-        """Build field name using points_to for write-through semantics."""
+        """Build field name using points_to for write-through semantics.
+
+        Uses the non-SSA base name so that writes and subsequent reads
+        to the same storage struct field resolve to the same key,
+        regardless of intervening SSA version bumps.
+        """
         points_to_target = operation.lvalue.points_to
         if isinstance(points_to_target, Variable):
-            struct_name = get_variable_name(points_to_target)
+            struct_name = _get_storage_base_name(points_to_target)
         else:
             struct_name = get_variable_name(operation.variable_left)
 
