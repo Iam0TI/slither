@@ -6,10 +6,14 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List
 
+from slither.analyses.data_flow.analyses.interval.analysis.domain import (
+    DomainVariant,
+)
 from slither.analyses.data_flow.analyses.interval.core.state import (
     ComparisonInfo,
     State,
 )
+from slither.analyses.data_flow.logger import get_logger
 from slither.analyses.data_flow.analyses.interval.core.tracked_variable import (
     TrackedSMTVariable,
 )
@@ -40,6 +44,8 @@ if TYPE_CHECKING:
     )
     from slither.core.cfg.node import Node
     from slither.slithir.operations.call import Call
+
+logger = get_logger()
 
 
 @dataclass(frozen=True)
@@ -227,7 +233,13 @@ class InterproceduralHandler(BaseOperationHandler):
 
         param_name_to_term = self._build_parameter_mapping(parameters, argument_terms)
         self._bind_parameter_reads(function, param_name_to_term, domain, call_prefix)
-        self._analyze_function_body(function, domain, call_prefix)
+        succeeded = self._analyze_function_body(function, domain, call_prefix)
+
+        if not succeeded:
+            self._restore_domain_state(domain)
+            self._create_unconstrained_tuple(tuple_name, tuple_types, domain)
+            return
+
         self._extract_tuple_return_values(
             function, domain, tuple_name, tuple_types, call_prefix
         )
@@ -379,7 +391,15 @@ class InterproceduralHandler(BaseOperationHandler):
 
         param_name_to_term = self._build_parameter_mapping(parameters, argument_terms)
         self._bind_parameter_reads(function, param_name_to_term, domain, context.call_prefix)
-        self._analyze_function_body(function, domain, context.call_prefix)
+        succeeded = self._analyze_function_body(function, domain, context.call_prefix)
+
+        if not succeeded:
+            self._restore_domain_state(domain)
+            self._create_unconstrained_result(
+                context.result_name, context.result_type, domain,
+            )
+            return
+
         self._extract_return_value(function, domain, context)
 
     def _build_parameter_mapping(
@@ -458,9 +478,14 @@ class InterproceduralHandler(BaseOperationHandler):
         function: Function,
         domain: "IntervalDomain",
         call_prefix: str,
-    ) -> None:
-        """Analyze the function's body operations."""
-        # Import here to avoid circular dependency (registry imports handlers)
+    ) -> bool:
+        """Analyze the function's body operations.
+
+        Returns True if analysis succeeded, False if the callee
+        contains unsupported operations or control flow that
+        poisoned the domain (e.g. revert on one branch setting
+        BOTTOM without a proper join for the non-revert branch).
+        """
         from slither.analyses.data_flow.analyses.interval.operations.registry import (
             OperationHandlerRegistry,
         )
@@ -470,8 +495,26 @@ class InterproceduralHandler(BaseOperationHandler):
 
         for node in function.nodes:
             for operation in node.irs_ssa:
-                handler = registry.get_handler(type(operation))
-                handler.handle(operation, prefixed_domain, node)
+                try:
+                    handler = registry.get_handler(type(operation))
+                    handler.handle(operation, prefixed_domain, node)
+                except NotImplementedError:
+                    logger.debug(
+                        "Unsupported operation in callee %s: %s",
+                        function.name,
+                        type(operation).__name__,
+                    )
+                    return False
+
+            if prefixed_domain.variant == DomainVariant.BOTTOM:
+                logger.debug(
+                    "Callee %s set domain to BOTTOM (likely "
+                    "revert without proper CFG join)",
+                    function.name,
+                )
+                return False
+
+        return True
 
     def _extract_return_value(
         self,
@@ -516,6 +559,11 @@ class InterproceduralHandler(BaseOperationHandler):
                 return domain.state.get_variable(return_name)
 
         return None
+
+    def _restore_domain_state(self, domain: "IntervalDomain") -> None:
+        """Restore domain to STATE if callee analysis poisoned it to BOTTOM."""
+        if domain.variant == DomainVariant.BOTTOM:
+            domain.variant = DomainVariant.STATE
 
     def _create_unconstrained_result(
         self,
