@@ -36,9 +36,8 @@ if TYPE_CHECKING:
     from slither.core.declarations.contract import Contract
     from slither.core.declarations.function import Function
 
-# Default timeout for optimization queries (milliseconds)
-# Importing from analysis.py to keep timeout consistent
 from slither.analyses.data_flow.analysis import DEFAULT_OPTIMIZE_TIMEOUT_MS as DEFAULT_TIMEOUT_MS
+from slither.analyses.data_flow.logger import get_logger
 
 
 @dataclass
@@ -49,7 +48,6 @@ class AnalysisConfig:
     function_name: str | None = None
     show_bounds: bool = False
     timeout_ms: int = DEFAULT_TIMEOUT_MS
-    budget_seconds: int | None = None
     skip_solving: bool = False
     show_telemetry: bool = False
     skip_compile: bool = False
@@ -65,12 +63,20 @@ def main() -> int:
     parser = _create_parser()
     args = parser.parse_args()
 
+    if args.timeout < 500:
+        logger = get_logger()
+        logger.warning(
+            "timeout %dms is below 500ms; Z3 Optimize on bitvectors"
+            " will likely return unknown, degrading results to"
+            " full type-range bounds",
+            args.timeout,
+        )
+
     config = AnalysisConfig(
         contract_name=args.contract_name,
         function_name=args.function,
         show_bounds=args.bounds,
         timeout_ms=args.timeout,
-        budget_seconds=args.budget,
         skip_solving=args.skip_solving,
         show_telemetry=args.telemetry,
         skip_compile=args.skip_compile,
@@ -112,13 +118,6 @@ def _create_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_MS,
         metavar="MS",
         help=f"SMT solver timeout in ms (default: {DEFAULT_TIMEOUT_MS})",
-    )
-    parser.add_argument(
-        "--budget",
-        type=int,
-        default=None,
-        metavar="SECONDS",
-        help="Total SMT solving time budget in seconds (overrides --timeout)",
     )
     parser.add_argument(
         "--skip-solving",
@@ -192,14 +191,13 @@ def analyze_contract(path: str, config: AnalysisConfig) -> int:
 
     # JSON output mode - collect results for all contracts
     if config.json_output:
-        from slither.analyses.data_flow.logger import get_logger
-        logger = get_logger()
-        logger.start_collecting_errors()
+        json_logger = get_logger()
+        json_logger.start_collecting_errors()
 
         functions = _analyze_contracts_json(contracts, config, cache)
         output = {
             "status": "completed" if functions else "empty",
-            "errors": logger.get_collected_errors(),
+            "errors": json_logger.get_collected_errors(),
             "functions": functions,
         }
         print(json.dumps(output, indent=2))
@@ -397,22 +395,6 @@ def _annotated_function_to_dict(func: AnnotatedFunction) -> dict:
     }
 
 
-def _compute_budget_timeout(
-    budget_seconds: int,
-    variable_count: int,
-) -> int:
-    """Compute per-query timeout from a total time budget.
-
-    Each variable requires 2 SMT optimize queries (min + max).
-    Returns timeout in milliseconds per optimize query, with a
-    minimum floor of 100ms to avoid trivially short timeouts.
-    """
-    query_count = max(variable_count * 2, 1)
-    budget_ms = budget_seconds * 1000
-    per_query_ms = budget_ms // query_count
-    return max(per_query_ms, 100)
-
-
 def analyze_function(
     function: "Function",
     solver: "SMTSolver",
@@ -536,33 +518,6 @@ def _get_function_filename(function: "Function") -> str:
     return "unknown"
 
 
-def _count_annotation_variables(
-    results: dict["Node", "object"],
-    config: AnalysisConfig,
-) -> int:
-    """Count variables that need SMT solving for annotated output."""
-    from slither.analyses.data_flow.analyses.interval.analysis.domain import (
-        DomainVariant,
-    )
-
-    seen: set[tuple[int, str]] = set()
-    for node, state in results.items():
-        if state.post.variant != DomainVariant.STATE:
-            continue
-        post_state = state.post.state
-        range_vars = post_state.get_range_variables()
-        used_vars = post_state.get_used_variables()
-        lines = _get_node_lines(node)
-        if not lines:
-            continue
-        primary_line = lines[0]
-        for var_name in range_vars:
-            if _should_skip_variable(var_name, used_vars, config.show_all):
-                continue
-            seen.add((primary_line, var_name))
-    return len(seen)
-
-
 def _collect_line_annotations(
     results: dict["Node", "object"],
     solver: "SMTSolver",
@@ -574,13 +529,7 @@ def _collect_line_annotations(
         DomainVariant,
     )
 
-    # Compute per-query timeout from budget if specified
     timeout_ms = config.timeout_ms
-    if config.budget_seconds is not None:
-        variable_count = _count_annotation_variables(results, config)
-        timeout_ms = _compute_budget_timeout(
-            config.budget_seconds, variable_count
-        )
 
     line_annotations: dict[int, list[LineAnnotation]] = defaultdict(list)
     seen_vars: set[tuple[int, str]] = set()

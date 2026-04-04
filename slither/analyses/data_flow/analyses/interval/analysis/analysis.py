@@ -45,15 +45,12 @@ logger = get_logger()
 class IntervalAnalysis(Analysis):
     """Forward interval analysis using SMT constraints."""
 
-    # Default timeout for SMT queries (milliseconds)
-    DEFAULT_TIMEOUT_MS = 1000
-
-    def __init__(self, solver: SMTSolver, timeout_ms: int | None = None) -> None:
+    def __init__(self, solver: SMTSolver, timeout_ms: int) -> None:
         self._direction: Direction = Forward()
         self._solver: SMTSolver = solver
         self._registry: OperationHandlerRegistry = OperationHandlerRegistry(self._solver)
         self._thresholds: List[int] = []
-        self._timeout_ms: int = timeout_ms if timeout_ms is not None else self.DEFAULT_TIMEOUT_MS
+        self._timeout_ms: int = timeout_ms
 
     @property
     def solver(self) -> SMTSolver:

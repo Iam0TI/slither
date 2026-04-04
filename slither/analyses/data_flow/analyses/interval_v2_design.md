@@ -64,7 +64,7 @@ Main orchestrator implementing forward interval analysis.
 - `_solver` - SMTSolver instance
 - `_registry` - OperationHandlerRegistry
 - `_thresholds` - Sorted numeric thresholds for widening
-- `_timeout_ms` - SMT query timeout (default 1000ms)
+- `_timeout_ms` - SMT query timeout (from `--timeout`, default 3000ms)
 
 ### IntervalDomain (`analysis/domain.py`)
 

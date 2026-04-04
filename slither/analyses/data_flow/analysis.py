@@ -13,9 +13,10 @@ from slither.analyses.data_flow.smt_solver.types import CheckSatResult, SMTTerm
 if TYPE_CHECKING:
     from slither.analyses.data_flow.smt_solver.cache import RangeQueryCache
 
-# Default timeout for Optimize queries (milliseconds)
-# 3000ms is needed for correct results on 256-bit inequality constraints
-# with path constraints from condition narrowing and overflow checks.
+# Default per-query timeout for Z3 Optimize (milliseconds).
+# Used by both the analysis/widening phase and the annotation phase.
+# Below 500ms, Z3 Optimize on 256-bit bitvectors frequently returns
+# unknown, which silently degrades results to full type-range bounds.
 DEFAULT_OPTIMIZE_TIMEOUT_MS = 3000
 
 
