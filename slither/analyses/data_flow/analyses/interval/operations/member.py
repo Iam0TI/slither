@@ -99,11 +99,12 @@ class MemberHandler(BaseOperationHandler):
     ) -> TrackedSMTVariable | None:
         """Find the latest field variable across SSA versions.
 
-        When the SSA-versioned lookup misses (e.g. feeData_3.curated
-        not in state), scans for the last-inserted variable whose name
-        ends with the same field suffix and whose struct part shares
-        the same base name.  Dict insertion order (Python 3.7+)
-        ensures the last match is the most recent write.
+        When the SSA-versioned lookup misses (e.g. ``feeData_3.curated``
+        not in state), scans for variables whose name shares the same
+        base struct name and field suffix.  Only returns a result when
+        **two or more** prior SSA versions exist for the field — a
+        single match is the pre-write read (e.g. from a ``require``)
+        whose branch constraints would conflict with a subsequent write.
         """
         points_to_target = operation.lvalue.points_to
         if not isinstance(points_to_target, Variable):
@@ -116,20 +117,23 @@ class MemberHandler(BaseOperationHandler):
         field_suffix = f".{operation.variable_right.value}"
 
         state = domain.state
-        if isinstance(state, State):
-            range_vars = state.get_range_variables()
-        else:
+        if not isinstance(state, State):
             return None
 
+        match_count = 0
         latest = None
-        for variable_name in range_vars:
+        for variable_name in state.get_range_variables():
             if variable_name == field_name:
                 continue
             if not variable_name.endswith(field_suffix):
                 continue
             if not variable_name.startswith(base_name):
                 continue
-            latest = range_vars[variable_name]
+            match_count += 1
+            latest = state.get_variable(variable_name)
+
+        if match_count < 2:
+            return None
         return latest
 
     def _link_reference_to_field(
