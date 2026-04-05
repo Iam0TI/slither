@@ -296,8 +296,8 @@ class InterproceduralHandler(BaseOperationHandler):
     ) -> List[TrackedSMTVariable | None]:
         """Find all return values from the function's return operations.
 
-        Takes the last Return with any tracked value, matching the
-        preference in ``_find_return_variable``.
+        Skips constant-only Returns (early-exit guards) and takes the
+        last Return with any tracked value.
         """
         latest: List[TrackedSMTVariable | None] = []
         for node in function.nodes:
@@ -305,6 +305,8 @@ class InterproceduralHandler(BaseOperationHandler):
                 if not isinstance(operation, Return):
                     continue
                 if not operation.values:
+                    continue
+                if all(isinstance(v, Constant) for v in operation.values):
                     continue
 
                 candidates = []
@@ -579,10 +581,10 @@ class InterproceduralHandler(BaseOperationHandler):
     ) -> TrackedSMTVariable | None:
         """Find the return variable from the function's return operations.
 
-        Prefers the last tracked Return in node order, which is
-        typically the implicit ``return <named_var>`` at the function
-        exit — early returns (``return 0``) from pruned branches
-        should not shadow it.
+        Skips ``return <constant>`` (early-exit guards from pruned
+        branches) and returns the last tracked named variable, which
+        is typically the implicit ``return <named_var>`` at the
+        function exit carrying the computed result.
         """
         latest: TrackedSMTVariable | None = None
         for node in function.nodes:
@@ -592,6 +594,8 @@ class InterproceduralHandler(BaseOperationHandler):
                 if not operation.values:
                     continue
                 return_val = operation.values[0]
+                if isinstance(return_val, Constant):
+                    continue
                 return_name = call_prefix + get_variable_name(return_val)
                 tracked = domain.state.get_variable(return_name)
                 if tracked is not None:
