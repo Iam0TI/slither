@@ -89,7 +89,10 @@ class PrefixedStateWrapper:
         """Get dependencies for prefixed variable, returning unprefixed names."""
         prefixed_deps = self._state.get_dependencies(self._prefix + variable)
         prefix_len = len(self._prefix)
-        return {dep[prefix_len:] if dep.startswith(self._prefix) else dep for dep in prefixed_deps}
+        return {
+            dep[prefix_len:] if dep.startswith(self._prefix) else dep
+            for dep in prefixed_deps
+        }
 
     def has_transitive_dependency(self, source: str, target: str) -> bool:
         """Check transitive dependency with prefixed names."""
@@ -199,7 +202,12 @@ class InterproceduralHandler(BaseOperationHandler):
 
         call_prefix = self._build_call_prefix(operation)
         self._analyze_tuple_function(
-            called_function, argument_terms, domain, tuple_name, lvalue.type, call_prefix
+            called_function,
+            argument_terms,
+            domain,
+            tuple_name,
+            lvalue.type,
+            call_prefix,
         )
 
     def _create_unconstrained_tuple(
@@ -265,7 +273,11 @@ class InterproceduralHandler(BaseOperationHandler):
             bit_width = get_bit_width(element_type)
 
             result_var = TrackedSMTVariable.create(
-                self.solver, element_name, sort, is_signed=is_signed, bit_width=bit_width
+                self.solver,
+                element_name,
+                sort,
+                is_signed=is_signed,
+                bit_width=bit_width,
             )
 
             if index < len(return_values) and return_values[index] is not None:
@@ -282,7 +294,12 @@ class InterproceduralHandler(BaseOperationHandler):
         domain: "IntervalDomain",
         call_prefix: str,
     ) -> List[TrackedSMTVariable | None]:
-        """Find all return values from the function's return operations."""
+        """Find all return values from the function's return operations.
+
+        Takes the last Return with any tracked value, matching the
+        preference in ``_find_return_variable``.
+        """
+        latest: List[TrackedSMTVariable | None] = []
         for node in function.nodes:
             for operation in node.irs_ssa:
                 if not isinstance(operation, Return):
@@ -290,14 +307,19 @@ class InterproceduralHandler(BaseOperationHandler):
                 if not operation.values:
                     continue
 
-                result = []
+                candidates = []
+                has_tracked = False
                 for return_val in operation.values:
                     return_name = call_prefix + get_variable_name(return_val)
                     tracked = domain.state.get_variable(return_name)
-                    result.append(tracked)
-                return result
+                    candidates.append(tracked)
+                    if tracked is not None:
+                        has_tracked = True
 
-        return []
+                if has_tracked:
+                    latest = candidates
+
+        return latest
 
     @abstractmethod
     def _get_called_function(self, operation: "Call") -> Function | None:
@@ -386,17 +408,23 @@ class InterproceduralHandler(BaseOperationHandler):
         parameters = function.parameters
 
         if len(parameters) != len(argument_terms):
-            self._create_unconstrained_result(context.result_name, context.result_type, domain)
+            self._create_unconstrained_result(
+                context.result_name, context.result_type, domain
+            )
             return
 
         param_name_to_term = self._build_parameter_mapping(parameters, argument_terms)
-        self._bind_parameter_reads(function, param_name_to_term, domain, context.call_prefix)
+        self._bind_parameter_reads(
+            function, param_name_to_term, domain, context.call_prefix
+        )
         succeeded = self._analyze_function_body(function, domain, context.call_prefix)
 
         if not succeeded:
             self._restore_domain_state(domain)
             self._create_unconstrained_result(
-                context.result_name, context.result_type, domain,
+                context.result_name,
+                context.result_type,
+                domain,
             )
             return
 
@@ -530,13 +558,15 @@ class InterproceduralHandler(BaseOperationHandler):
         bit_width = get_bit_width(context.result_type)
 
         result_var = TrackedSMTVariable.create(
-            self.solver, context.result_name, sort, is_signed=is_signed, bit_width=bit_width
+            self.solver,
+            context.result_name,
+            sort,
+            is_signed=is_signed,
+            bit_width=bit_width,
         )
 
         if return_var is not None:
-            matched_return = match_width(
-                self.solver, return_var.term, result_var.term
-            )
+            matched_return = match_width(self.solver, return_var.term, result_var.term)
             self.solver.assert_constraint(result_var.term == matched_return)
 
         domain.state.set_variable(context.result_name, result_var)
@@ -547,7 +577,14 @@ class InterproceduralHandler(BaseOperationHandler):
         domain: "IntervalDomain",
         call_prefix: str,
     ) -> TrackedSMTVariable | None:
-        """Find the return variable from the function's return operations."""
+        """Find the return variable from the function's return operations.
+
+        Prefers the last tracked Return in node order, which is
+        typically the implicit ``return <named_var>`` at the function
+        exit — early returns (``return 0``) from pruned branches
+        should not shadow it.
+        """
+        latest: TrackedSMTVariable | None = None
         for node in function.nodes:
             for operation in node.irs_ssa:
                 if not isinstance(operation, Return):
@@ -556,9 +593,10 @@ class InterproceduralHandler(BaseOperationHandler):
                     continue
                 return_val = operation.values[0]
                 return_name = call_prefix + get_variable_name(return_val)
-                return domain.state.get_variable(return_name)
-
-        return None
+                tracked = domain.state.get_variable(return_name)
+                if tracked is not None:
+                    latest = tracked
+        return latest
 
     def _restore_domain_state(self, domain: "IntervalDomain") -> None:
         """Restore domain to STATE if callee analysis poisoned it to BOTTOM."""
