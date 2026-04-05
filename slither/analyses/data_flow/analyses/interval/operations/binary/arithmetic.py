@@ -44,19 +44,21 @@ class ConstraintContext:
     bit_width: int
 
 
-ARITHMETIC_OPERATIONS = frozenset({
-    BinaryType.ADDITION,
-    BinaryType.SUBTRACTION,
-    BinaryType.MULTIPLICATION,
-    BinaryType.DIVISION,
-    BinaryType.MODULO,
-    BinaryType.POWER,
-    BinaryType.LEFT_SHIFT,
-    BinaryType.RIGHT_SHIFT,
-    BinaryType.AND,
-    BinaryType.OR,
-    BinaryType.CARET,
-})
+ARITHMETIC_OPERATIONS = frozenset(
+    {
+        BinaryType.ADDITION,
+        BinaryType.SUBTRACTION,
+        BinaryType.MULTIPLICATION,
+        BinaryType.DIVISION,
+        BinaryType.MODULO,
+        BinaryType.POWER,
+        BinaryType.LEFT_SHIFT,
+        BinaryType.RIGHT_SHIFT,
+        BinaryType.AND,
+        BinaryType.OR,
+        BinaryType.CARET,
+    }
+)
 
 
 class ArithmeticHandler(BaseOperationHandler):
@@ -80,8 +82,25 @@ class ArithmeticHandler(BaseOperationHandler):
         bit_width = get_bit_width(result_type)
         signed, both_constants = self._determine_signedness(operation, result_type)
 
-        result_var = self._create_result_variable(result_name, bit_width, signed)
-        left_term = self._resolve_operand(operation.variable_left, domain, bit_width)
+        left_name = get_variable_name(operation.variable_left)
+        is_compound = result_name == left_name
+
+        # For compound assignments (REF = REF + x), resolve the left
+        # operand BEFORE creating the result variable so we capture
+        # the pre-write term.  Then create a fresh Z3 variable for
+        # the post-write result to avoid a circular constraint.
+        if is_compound:
+            left_term = self._resolve_operand(
+                operation.variable_left, domain, bit_width
+            )
+            result_var = self._create_result_variable(
+                result_name + "__post", bit_width, signed
+            )
+        else:
+            result_var = self._create_result_variable(result_name, bit_width, signed)
+            left_term = self._resolve_operand(
+                operation.variable_left, domain, bit_width
+            )
         right_term = self._resolve_operand(operation.variable_right, domain, bit_width)
 
         if left_term is None or right_term is None:
@@ -90,7 +109,12 @@ class ArithmeticHandler(BaseOperationHandler):
 
         is_self_operation = self._is_same_operand(operation)
         result_term = self._compute_result(
-            operation.type, left_term, right_term, result_type, is_self_operation, bit_width
+            operation.type,
+            left_term,
+            right_term,
+            result_type,
+            is_self_operation,
+            bit_width,
         )
         if result_term is not None:
             self.solver.assert_constraint(result_var.term == result_term)
@@ -105,7 +129,9 @@ class ArithmeticHandler(BaseOperationHandler):
         is_checked = node.scope.is_checked
         should_check = is_checked and result_term is not None and not both_constants
         if should_check:
-            context = ConstraintContext(left_term, right_term, result_term, signed, bit_width)
+            context = ConstraintContext(
+                left_term, right_term, result_term, signed, bit_width
+            )
             self._assert_checked_constraints(operation.type, context, domain)
 
         # Store predicates and is_checked flag for deferred overflow checking
@@ -139,9 +165,8 @@ class ArithmeticHandler(BaseOperationHandler):
     ) -> tuple[bool, bool]:
         """Determine signedness and whether both operands are constants."""
         signed = is_signed_type(result_type)
-        both_constants = (
-            isinstance(operation.variable_left, Constant)
-            and isinstance(operation.variable_right, Constant)
+        both_constants = isinstance(operation.variable_left, Constant) and isinstance(
+            operation.variable_right, Constant
         )
         if both_constants and operation.type == BinaryType.SUBTRACTION:
             signed = self._check_constant_subtraction_signed(operation, signed)
@@ -170,7 +195,9 @@ class ArithmeticHandler(BaseOperationHandler):
         """Compute overflow predicates, returning empty dict for constants."""
         if both_constants:
             return {"no_overflow": None, "no_underflow": None}
-        return self._get_overflow_predicates(operation_type, left_term, right_term, is_signed)
+        return self._get_overflow_predicates(
+            operation_type, left_term, right_term, is_signed
+        )
 
     def _check_constant_subtraction_signed(
         self,
@@ -216,7 +243,9 @@ class ArithmeticHandler(BaseOperationHandler):
         if context.is_signed:
             self._add_signed_addition_constraints(context, domain)
         else:
-            domain.state.add_path_constraint(self.solver.bv_uge(context.result, context.left))
+            domain.state.add_path_constraint(
+                self.solver.bv_uge(context.result, context.left)
+            )
 
     def _add_signed_addition_constraints(
         self, context: ConstraintContext, domain: "IntervalDomain"
@@ -236,12 +265,12 @@ class ArithmeticHandler(BaseOperationHandler):
         # If both positive, result must be non-negative (allows edge case zero)
         no_overflow = self.solver.Or(
             self.solver.Not(self.solver.And(left_positive, right_positive)),
-            self.solver.bv_sge(context.result, zero)
+            self.solver.bv_sge(context.result, zero),
         )
         # If both negative, result must be non-positive (allows edge case zero)
         no_underflow = self.solver.Or(
             self.solver.Not(self.solver.And(left_negative, right_negative)),
-            self.solver.bv_sle(context.result, zero)
+            self.solver.bv_sle(context.result, zero),
         )
         domain.state.add_path_constraint(no_overflow)
         domain.state.add_path_constraint(no_underflow)
@@ -257,7 +286,9 @@ class ArithmeticHandler(BaseOperationHandler):
         if context.is_signed:
             self._add_signed_subtraction_constraints(context, domain)
         else:
-            domain.state.add_path_constraint(self.solver.bv_ule(context.result, context.left))
+            domain.state.add_path_constraint(
+                self.solver.bv_ule(context.result, context.left)
+            )
 
     def _add_signed_subtraction_constraints(
         self, context: ConstraintContext, domain: "IntervalDomain"
@@ -277,12 +308,12 @@ class ArithmeticHandler(BaseOperationHandler):
         # pos - neg should stay non-negative
         no_overflow = self.solver.Or(
             self.solver.Not(self.solver.And(left_positive, right_negative)),
-            result_positive
+            result_positive,
         )
         # neg - pos should stay negative
         no_underflow = self.solver.Or(
             self.solver.Not(self.solver.And(left_negative, right_positive)),
-            result_negative
+            result_negative,
         )
         domain.state.add_path_constraint(no_overflow)
         domain.state.add_path_constraint(no_underflow)
@@ -306,7 +337,9 @@ class ArithmeticHandler(BaseOperationHandler):
         self, divisor: SMTTerm, bit_width: int, domain: "IntervalDomain"
     ) -> None:
         """Add divisor nonzero constraint as path constraint (division by zero reverts)."""
-        zero = self.solver.create_constant(0, Sort(kind=SortKind.BITVEC, parameters=[bit_width]))
+        zero = self.solver.create_constant(
+            0, Sort(kind=SortKind.BITVEC, parameters=[bit_width])
+        )
         domain.state.add_path_constraint(self.solver.Not(divisor == zero))
 
     def _get_result_type(self, operation: Binary) -> ElementaryType | None:
@@ -358,11 +391,17 @@ class ArithmeticHandler(BaseOperationHandler):
 
         if is_self_operation:
             if operation_type == BinaryType.DIVISION:
-                return self.solver.create_constant(1, Sort(SortKind.BITVEC, [bit_width]))
+                return self.solver.create_constant(
+                    1, Sort(SortKind.BITVEC, [bit_width])
+                )
             if operation_type == BinaryType.MODULO:
-                return self.solver.create_constant(0, Sort(SortKind.BITVEC, [bit_width]))
+                return self.solver.create_constant(
+                    0, Sort(SortKind.BITVEC, [bit_width])
+                )
             if operation_type == BinaryType.SUBTRACTION:
-                return self.solver.create_constant(0, Sort(SortKind.BITVEC, [bit_width]))
+                return self.solver.create_constant(
+                    0, Sort(SortKind.BITVEC, [bit_width])
+                )
 
         dispatch: dict[BinaryType, Callable[[], SMTTerm]] = {
             BinaryType.ADDITION: lambda: self.solver.bv_add(left, right),
