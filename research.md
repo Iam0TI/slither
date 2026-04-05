@@ -707,3 +707,34 @@ Provides standard logging methods plus:
    with outliers (multiplication) taking 3-7 seconds regardless.
    A lower default (e.g., 1000ms) might be appropriate with explicit
    opt-in for expensive queries.
+
+---
+
+## Known Limitations
+
+### Write-through-reference aliasing (`+=`, `-=`, etc.)
+
+Compound assignment through storage references (`routing.funding +=
+curatorFeePayout`) produces a circular Z3 constraint that forces the
+addend to zero. The SSA represents this as:
+
+```
+REF_344 = routing.funding              // read: REF_344 == field
+REF_345 = REF_344 + curatorFeePayout   // add:  REF_345 == REF_344 + x
+REF_344 := REF_345                     // write: REF_344 == REF_345
+```
+
+The write reuses the same reference, so Z3 sees
+`REF_344 == REF_344 + curatorFeePayout` and derives `curatorFeePayout == 0`.
+Fixing this requires either SSA-level changes (separate pre/post
+references for compound assignments) or analysis-level handling that
+creates a fresh Z3 variable for the post-write reference.
+
+### Interprocedural Z3 variable namespace collision
+
+The `PrefixedDomainWrapper` prefixes state-dictionary keys for callee
+variables but does **not** prefix the Z3 variable names passed to
+`TrackedSMTVariable.create`. Callee temporaries (e.g. `TMP_892`)
+share the global Z3 namespace. This is safe when TMP indices are
+unique across the compilation unit, but fragile if two callees in the
+same analysis reuse the same TMP index.
