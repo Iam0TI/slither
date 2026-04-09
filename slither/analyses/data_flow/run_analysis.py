@@ -777,9 +777,6 @@ def _check_overflow_possible(
     """
     from slither.analyses.data_flow.smt_solver.types import CheckSatResult
 
-    if not smt_var.is_unchecked:
-        return False, False
-
     can_overflow = False
     can_underflow = False
 
