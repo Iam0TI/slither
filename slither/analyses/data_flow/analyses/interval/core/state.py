@@ -33,12 +33,14 @@ class State:
         path_constraints: list["SMTTerm"] | None = None,
         dependencies: dict[str, set[str]] | None = None,
         storage_slots: dict[str, list[str]] | None = None,
+        branch_constraints: list["SMTTerm"] | None = None,
     ):
         self._variables: dict[str, TrackedSMTVariable] = variables or {}
         self._comparisons: dict[str, ComparisonInfo] = comparisons or {}
         self._path_constraints: list["SMTTerm"] = path_constraints or []
         self._dependencies: dict[str, set[str]] = dependencies or {}
         self._storage_slots: dict[str, list[str]] = storage_slots or {}
+        self._branch_constraints: list["SMTTerm"] = branch_constraints or []
 
     def get_variable(self, name: str) -> TrackedSMTVariable | None:
         """Get tracked variable by name, or None if not tracked."""
@@ -66,6 +68,20 @@ class State:
 
     def add_path_constraint(self, constraint: "SMTTerm") -> None:
         """Add a path constraint for branch narrowing."""
+        self._path_constraints.append(constraint)
+
+    def get_branch_constraints(self) -> list["SMTTerm"]:
+        """Get relational branch guards (from if/while conditions)."""
+        return self._branch_constraints
+
+    def add_branch_constraint(self, constraint: "SMTTerm") -> None:
+        """Add a relational branch guard from apply_condition.
+
+        Kept separate from path_constraints because checked-arithmetic
+        path constraints (e.g. ``result <= left``) would trivially
+        prove no-overflow if mixed in during the overflow SAT check.
+        """
+        self._branch_constraints.append(constraint)
         self._path_constraints.append(constraint)
 
     def set_comparison(self, name: str, info: ComparisonInfo) -> None:
@@ -130,4 +146,5 @@ class State:
             list(self._path_constraints),
             copied_deps,
             copied_storage,
+            list(self._branch_constraints),
         )

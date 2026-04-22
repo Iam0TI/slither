@@ -541,6 +541,7 @@ def _collect_line_annotations(
         range_vars = post_state.get_range_variables()
         used_vars = post_state.get_used_variables()
         path_constraints = post_state.get_path_constraints()
+        branch_constraints = post_state.get_branch_constraints()
 
         lines = _get_node_lines(node)
         if not lines:
@@ -569,6 +570,7 @@ def _collect_line_annotations(
                 cache,
                 tmp_expressions,
                 timeout_ms,
+                branch_constraints,
             )
             if annotation:
                 line_annotations[primary_line].append(annotation)
@@ -673,6 +675,7 @@ def _create_annotation(
     cache: "RangeQueryCache",
     tmp_expressions: dict[str, str] | None = None,
     timeout_ms: int | None = None,
+    branch_constraints: list | None = None,
 ) -> LineAnnotation | None:
     """Create a LineAnnotation from analysis data."""
     from slither.analyses.data_flow.analysis import (
@@ -732,7 +735,7 @@ def _create_annotation(
 
     # Check overflow possibility for unchecked arithmetic (deferred to annotation time)
     can_overflow, can_underflow = _check_overflow_possible(
-        solver, smt_var, effective_timeout
+        solver, smt_var, effective_timeout, branch_constraints
     )
 
     # Record precision metrics
@@ -759,6 +762,7 @@ def _check_overflow_possible(
     solver: "SMTSolver",
     smt_var: "TrackedSMTVariable",
     timeout_ms: int,
+    path_constraints: list | None = None,
 ) -> tuple[bool, bool]:
     """Check if overflow/underflow is possible for unchecked arithmetic.
 
@@ -767,10 +771,18 @@ def _check_overflow_possible(
     returns UNKNOWN (timeout), we conservatively report overflow as
     possible — only an explicit UNSAT proves the operation is safe.
 
+    Branch guards (e.g. from ``if (a > b)``) are included so relational
+    guards like ``if`` suppress false positives the same way ``require``
+    does.  Checked-arithmetic path constraints (``result <= left``) are
+    deliberately excluded — they would trivially prove no overflow for
+    the very operation being checked.
+
     Args:
         solver: The SMT solver instance.
         smt_var: The tracked variable with overflow predicates.
         timeout_ms: Timeout in milliseconds for each check.
+        path_constraints: Branch-guard SMT constraints from the state
+            containing this arithmetic operation.
 
     Returns:
         Tuple of (can_overflow, can_underflow) booleans.
@@ -779,9 +791,12 @@ def _check_overflow_possible(
 
     can_overflow = False
     can_underflow = False
+    extra_constraints = path_constraints or []
 
     if smt_var.no_overflow is not None:
         solver.push()
+        for constraint in extra_constraints:
+            solver.assert_constraint(constraint)
         solver.assert_constraint(solver.Not(smt_var.no_overflow))
         result = solver.check_sat_with_timeout(timeout_ms)
         can_overflow = result != CheckSatResult.UNSAT
@@ -789,6 +804,8 @@ def _check_overflow_possible(
 
     if smt_var.no_underflow is not None:
         solver.push()
+        for constraint in extra_constraints:
+            solver.assert_constraint(constraint)
         solver.assert_constraint(solver.Not(smt_var.no_underflow))
         result = solver.check_sat_with_timeout(timeout_ms)
         can_underflow = result != CheckSatResult.UNSAT

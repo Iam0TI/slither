@@ -48,7 +48,9 @@ class IntervalAnalysis(Analysis):
     def __init__(self, solver: SMTSolver, timeout_ms: int) -> None:
         self._direction: Direction = Forward()
         self._solver: SMTSolver = solver
-        self._registry: OperationHandlerRegistry = OperationHandlerRegistry(self._solver)
+        self._registry: OperationHandlerRegistry = OperationHandlerRegistry(
+            self._solver
+        )
         self._thresholds: List[int] = []
         self._timeout_ms: int = timeout_ms
 
@@ -92,9 +94,7 @@ class IntervalAnalysis(Analysis):
 
         return sorted(threshold_set)
 
-    def _extract_constants_from_node(
-        self, node: Node, threshold_set: set[int]
-    ) -> None:
+    def _extract_constants_from_node(self, node: Node, threshold_set: set[int]) -> None:
         """Extract numeric constants from a single CFG node."""
         for operation in node.irs_ssa or []:
             for operand in operation.read:
@@ -250,15 +250,36 @@ class IntervalAnalysis(Analysis):
             binary_op = operation
             op_type_enum = getattr(binary_op, "type", None)
             if op_type_enum is not None:
-                op_name_str = str(op_type_enum.name) if hasattr(op_type_enum, "name") else ""
-                if op_name_str in ("ADDITION", "SUBTRACTION", "MULTIPLICATION", "DIVISION",
-                                   "MODULO", "POWER"):
+                op_name_str = (
+                    str(op_type_enum.name) if hasattr(op_type_enum, "name") else ""
+                )
+                if op_name_str in (
+                    "ADDITION",
+                    "SUBTRACTION",
+                    "MULTIPLICATION",
+                    "DIVISION",
+                    "MODULO",
+                    "POWER",
+                ):
                     telemetry.record_transfer_op("arithmetic", handled=True)
-                elif op_name_str in ("LESS", "GREATER", "LESS_EQUAL", "GREATER_EQUAL",
-                                     "EQUAL", "NOT_EQUAL"):
+                elif op_name_str in (
+                    "LESS",
+                    "GREATER",
+                    "LESS_EQUAL",
+                    "GREATER_EQUAL",
+                    "EQUAL",
+                    "NOT_EQUAL",
+                ):
                     telemetry.record_transfer_op("comparison", handled=True)
-                elif op_name_str in ("AND", "OR", "LEFT_SHIFT", "RIGHT_SHIFT",
-                                     "CARET", "OROR", "ANDAND"):
+                elif op_name_str in (
+                    "AND",
+                    "OR",
+                    "LEFT_SHIFT",
+                    "RIGHT_SHIFT",
+                    "CARET",
+                    "OROR",
+                    "ANDAND",
+                ):
                     telemetry.record_transfer_op("bitwise", handled=True)
                 else:
                     telemetry.record_transfer_op("arithmetic", handled=True)
@@ -324,7 +345,7 @@ class IntervalAnalysis(Analysis):
         branch_constraint = self._create_branch_constraint(
             comparison_info.condition, branch_taken
         )
-        filtered_domain.state.add_path_constraint(branch_constraint)
+        filtered_domain.state.add_branch_constraint(branch_constraint)
         return filtered_domain
 
     def _create_branch_constraint(
@@ -390,7 +411,9 @@ class IntervalAnalysis(Analysis):
                 continue
 
             # Compare bounds to check if value grew
-            if self._bounds_are_stable(current_variable, previous_variable, current_state):
+            if self._bounds_are_stable(
+                current_variable, previous_variable, current_state
+            ):
                 # Stable - keep current variable (preserves its constraints)
                 widened_state.set_variable(variable_name, current_variable)
             else:
@@ -416,9 +439,7 @@ class IntervalAnalysis(Analysis):
             return parts[0]
         return ssa_name
 
-    def _build_base_name_map(
-        self, state: State
-    ) -> dict[str, TrackedSMTVariable]:
+    def _build_base_name_map(self, state: State) -> dict[str, TrackedSMTVariable]:
         """Build mapping from base name to variable (latest SSA version)."""
         base_map: dict[str, TrackedSMTVariable] = {}
         for variable_name in state.variable_names():
